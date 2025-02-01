@@ -16,6 +16,9 @@ extension ListAddIf<T> on List<T> {
   }
 }
 
+Process? _serverProcess;
+bool _serverRunning = false;
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await _startServer();
@@ -53,21 +56,27 @@ void main() async {
 }
 
 Future<void> _startServer() async {
+  if (_serverRunning) {
+    print('Server is already running.');
+    return;
+  }
+
   try {
-    String serverScriptPath = await _getServerScriptPath();
-    await Process.start(
-      'cmd',
-      ['/c', 'start', 'python', serverScriptPath],
-      runInShell: true,
+    String serverExecutablePath = await _getServerExecutablePath();
+    _serverProcess = await Process.start(
+      serverExecutablePath,
+      [],
+      mode: ProcessStartMode.detached,
     );
+    _serverRunning = true;
     print('Server started successfully.');
   } catch (e) {
     print('Failed to start server: $e');
   }
 }
 
-Future<String> _getServerScriptPath() async {
-  return path.join(Directory.current.path, 'app.py');
+Future<String> _getServerExecutablePath() async {
+  return path.join(Directory.current.path, 'dist', 'app.exe');
 }
 
 class MainMenu extends StatelessWidget {
@@ -142,7 +151,7 @@ class MyApp extends StatefulWidget {
   _MyAppState createState() => _MyAppState();
 }
 
-class _MyAppState extends State<MyApp> with SingleTickerProviderStateMixin, WidgetsBindingObserver {
+class _MyAppState extends State<MyApp> with TickerProviderStateMixin, WidgetsBindingObserver {
   // Change int to double for numeric values that can be decimal
   double _cookieCount = 0;
   double _clickValue = 1;
@@ -156,7 +165,11 @@ class _MyAppState extends State<MyApp> with SingleTickerProviderStateMixin, Widg
   bool _serverRunning = false, _isHovered = false;
   late AnimationController _animationController;
   late Animation<Offset> _animation;
+  late AnimationController _pulseController;
+  late Animation<double> _pulseAnimation;
   Timer? _timer;
+  int cookieFrame = 1;
+  int muffinFrame = 1;
 
   // Update factory costs to double
   Map<String, double> _factoryCosts = {
@@ -189,10 +202,34 @@ class _MyAppState extends State<MyApp> with SingleTickerProviderStateMixin, Widg
   // Add factory counts
   Map<String, int> _factoryCounts = {};
 
-  bool _isClicking = false;
-  bool _isHovering = false;
-  bool _isHoveringCookie = false;
-  Offset _mousePosition = Offset.zero;
+  int _tutorialStep = 0;
+  bool _showTutorial = false;
+
+  final List<String> _tutorialTexts = [
+    "Welcome to Cookie DESTROYER! Your objective is to break as many cookies as possible.",
+    "Click on the cookie to brake more cookies. Use broken cookies to buy upgrades and destruction factories.",
+    "REMEMBER! There is money to be made here",
+    "Dont be a fool and save regurally.",
+    "In this busieness we prestige to be ahead in the cookie braking game! GOOD LUCK!",
+  ];
+
+  final List<String> _bossImages = [
+    'assets/boss/angry.png',
+    'assets/boss/happy.png',
+    'assets/boss/passive.png',
+    'assets/boss/question.png',
+    'assets/boss/shocked.png',
+  ];
+
+  void _showNextTutorialStep() {
+    setState(() {
+      if (_tutorialStep < _tutorialTexts.length - 1) {
+        _tutorialStep++;
+      } else {
+        _showTutorial = false;
+      }
+    });
+  }
 
   @override
   void initState() {
@@ -200,19 +237,34 @@ class _MyAppState extends State<MyApp> with SingleTickerProviderStateMixin, Widg
     WidgetsBinding.instance.addObserver(this);
     _setupAnimation();
 
-    // Start the timer to periodically fetch the state
-    _startStateFetchingTimer();
+    _pulseController = AnimationController(
+      duration: const Duration(milliseconds: 100),
+      vsync: this,
+    );
+    _pulseAnimation = Tween<double>(begin: 1.0, end: 1.1).animate(
+      CurvedAnimation(
+        parent: _pulseController,
+        curve: Curves.easeInOut,
+      ),
+    );
+
+    // Start the server and the timer to periodically fetch the state
+    _startServer().then((_) {
+      _startStateFetchingTimer();
+    });
 
     // Load the game state if a slot is provided
     if (widget.slot != null) {
       _loadGame(widget.slot!);
+    } else {
+      _showTutorial = true; // Show tutorial if starting a new game
     }
   }
 
   @override
-  void dispose() async {
+  void dispose() {
     _timer?.cancel();
-    await _shutdownServer();
+    _shutdownServer();
     _animationController.dispose();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
@@ -731,6 +783,34 @@ Widget _buildTotalProductionRate() {
   );
 }
 
+Widget _buildBossSection() {
+  return Positioned(
+    bottom: 0,
+    left: 0,
+    right: 0,
+    child: Container(
+      padding: const EdgeInsets.symmetric(vertical: 20.0), // Increase padding
+      decoration: BoxDecoration(
+        color: Colors.brown.withOpacity(0.2),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Center(
+        child: ClipRect(
+          child: Align(
+            alignment: Alignment.topCenter,
+            heightFactor: 0.4, // Show only the top 40% of the image
+            child: Image.asset(
+              _getBossExpression(),
+              width: 450, // Increase width
+              height: 450, // Increase height
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
 @override
 Widget build(BuildContext context) {
   return Scaffold(
@@ -753,102 +833,187 @@ Widget build(BuildContext context) {
         ),
       ],
     ),
-    body: BlurredBackground(
-      blurIntensity: 5.0, // Very slight blur for main background
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Left side with cookie and stats
-            Flexible(
-              flex: 1,
-              child: Column(
-                children: [
-                  Center(
-                    child: MouseRegion(
-                      onEnter: (_) {
-                        setState(() => _isHovered = true);
-                        _getState();
-                      },
-                      onExit: (_) => setState(() => _isHovered = false),
-                      child: GestureDetector(
-                        onTap: _click,
-                        child: SlideTransition(
-                          position: _animation,
-                          child: Stack(
-                            children: [
-                              AnimatedContainer(
-                                duration: const Duration(milliseconds: 200),
-                                width: _isHovered ? 400 : 350,
-                                height: _isHovered ? 400 : 350,
-                                child: Image.asset('assets/cookie.png'),
+    body: Stack(
+      children: [
+        BlurredBackground(
+          blurIntensity: 5.0, // Very slight blur for main background
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Left side with cookie and stats
+                Flexible(
+                  flex: 1,
+                  child: Stack(
+                    children: [
+                      Column(
+                        children: [
+                          Center(
+                            child: MouseRegion(
+                              onEnter: (_) {
+                                setState(() => _isHovered = true);
+                                _getState();
+                              },
+                              onExit: (_) => setState(() => _isHovered = false),
+                              child: GestureDetector(
+                                onTap: () async {
+                                  setState(() {
+                                    if (_prestigePoints % 2 == 0) {
+                                      cookieFrame = (cookieFrame % 4) + 1;
+                                    } else {
+                                      muffinFrame = (muffinFrame % 3) + 1;
+                                    }
+                                  });
+                                  _pulseController.forward(from: 0.0);
+                                  await _click(); // Add this line to update the cookie counter
+                                },
+                                child: LayoutBuilder(
+                                  builder: (context, constraints) {
+                                    double size = min(constraints.maxWidth, constraints.maxHeight) * 0.5;
+                                    return SlideTransition(
+                                      position: _animation,
+                                      child: ScaleTransition(
+                                        scale: _pulseAnimation,
+                                        child: Stack(
+                                          children: [
+                                            AnimatedContainer(
+                                              duration: const Duration(milliseconds: 200),
+                                              width: _isHovered ? size * 1.2 : size,
+                                              height: _isHovered ? size * 1.2 : size,
+                                              child: Image.asset(
+                                                _prestigePoints % 2 == 0
+                                                    ? 'assets/cookie$cookieFrame.png'
+                                                    : 'assets/muffin$muffinFrame.png',
+                                              ),
+                                            ),
+                                            _buildUpgradeCount(),
+                                          ],
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                ),
                               ),
-                              _buildUpgradeCount(),
-                            ],
+                            ),
+                          ),
+                          const SizedBox(height: 20),
+                          _buildTotalCookiesProduced(),
+                          const SizedBox(height: 10),
+                          Text('Cookies: ${_cookieCount.toStringAsFixed(2)}', 
+                            style: const TextStyle(fontSize: 24)
+                          ),
+                          const SizedBox(height: 10),
+                          _buildTotalProductionRate(),
+                          const SizedBox(height: 40), // Add more space between the cookie and the boss section
+                        ],
+                      ),
+                      _buildBossSection(), // Add the boss section here
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 20),
+                // Right side with factories and upgrades
+                Flexible(
+                  flex: 2,
+                  child: Column(
+                    children: [
+                      Expanded(
+                        flex: 1,
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: BackdropFilter(
+                            filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+                            child: Container(
+                              decoration: BoxDecoration(
+                                color: Colors.white.withOpacity(0.1),
+                                border: Border.all(color: Colors.grey),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: _buildUpgradeSection(),
+                            ),
                           ),
                         ),
                       ),
-                    ),
+                      const SizedBox(height: 20),
+                      Expanded(
+                        flex: 2,
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: BackdropFilter(
+                            filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+                            child: Container(
+                              decoration: BoxDecoration(
+                                color: Colors.white.withOpacity(0.1),
+                                border: Border.all(color: Colors.grey),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: _buildFactorySection(),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                  const SizedBox(height: 20),
-                  _buildTotalCookiesProduced(),
-                  const SizedBox(height: 10),
-                  Text('Cookies: ${_cookieCount.toStringAsFixed(2)}', 
-                    style: const TextStyle(fontSize: 24)
-                  ),
-                  const SizedBox(height: 10),
-                  _buildTotalProductionRate(),
-                ],
-              ),
+                ),
+              ],
             ),
-            const SizedBox(width: 20),
-            // Right side with factories and upgrades
-            Flexible(
-              flex: 2,
-              child: Column(
-                children: [
-                  Expanded(
-                    flex: 1,
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
-                      child: BackdropFilter(
-                        filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-                        child: Container(
-                          decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.1),
-                            border: Border.all(color: Colors.grey),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: _buildUpgradeSection(),
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-                  Expanded(
-                    flex: 2,
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
-                      child: BackdropFilter(
-                        filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-                        child: Container(
-                          decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.1),
-                            border: Border.all(color: Colors.grey),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: _buildFactorySection(),
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
+          ),
         ),
-      ),
+        if (_showTutorial)
+          BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+            child: Center(
+              child: Container(
+                width: 300,
+                padding: const EdgeInsets.all(16.0),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(8),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.5),
+                      blurRadius: 10,
+                      offset: Offset(0, 5),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Image.asset(_bossImages[_tutorialStep]),
+                    const SizedBox(height: 10),
+                    Text(
+                      _tutorialTexts[_tutorialStep],
+                      style: const TextStyle(fontSize: 16),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 10),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        if (_tutorialStep > 0)
+                          ElevatedButton(
+                            onPressed: () {
+                              setState(() {
+                                _tutorialStep--;
+                              });
+                            },
+                            child: const Text('Back'),
+                          ),
+                        const Spacer(), // Add a spacer to push the "Next" button to the right
+                        ElevatedButton(
+                          onPressed: _showNextTutorialStep,
+                          child: const Text('Next'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+      ],
     ),
   );
 }
@@ -871,24 +1036,24 @@ Widget build(BuildContext context) {
 
   // Add a new method to handle clean shutdown
   Future<void> _shutdownServer() async {
-    try {
-      if (_serverRunning) {
-        print('Attempting to shut down server...');
-        final response = await http.post(Uri.parse('http://127.0.0.1:8000/shutdown'))
-            .timeout(const Duration(seconds: 5));
-        if (response.statusCode == 200) {
-          print('Server shutdown request successful.');
-        } else {
-          print('Failed to shut down server: ${response.statusCode}');
-        }
-        _serverProcess?.kill();
-          print('Server process killed.');
-        _serverRunning = false;
+  try {
+    if (_serverRunning) {
+      print('Attempting to shut down server...');
+      final response = await http.post(Uri.parse('http://127.0.0.1:8000/shutdown'))
+          .timeout(const Duration(seconds: 5));
+      if (response.statusCode == 200) {
+        print('Server shutdown request successful.');
+      } else {
+        print('Failed to shut down server: ${response.statusCode}');
       }
-    } catch (e) {
-      print('Error during server shutdown: $e');
+      _serverProcess?.kill();
+      print('Server process killed.');
+      _serverRunning = false;
     }
+  } catch (e) {
+    print('Error during server shutdown: $e');
   }
+}
 
   // Add a new method to start the state fetching timer
   void _startStateFetchingTimer() {
@@ -901,6 +1066,21 @@ Widget build(BuildContext context) {
   void _restartStateFetchingTimer() {
     _timer?.cancel();
     _startStateFetchingTimer();
+  }
+
+  // Add a new method to get boss expression based on production rate
+  String _getBossExpression() {
+    if (_totalProductionRate < 1) {
+      return 'assets/boss/passive.png';
+    } else if (_totalProductionRate < 5) {
+      return 'assets/boss/question.png';
+    } else if (_totalProductionRate < 10) {
+      return 'assets/boss/happy.png';
+    } else if (_totalProductionRate < 20) {
+      return 'assets/boss/shocked.png';
+    } else {
+      return 'assets/boss/angry.png';
+    }
   }
 }
 
